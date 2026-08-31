@@ -1,5 +1,5 @@
 {
-  "name": "𝗚𝗹𝗼𝗿𝗶𝗮-𝗠𝗗",
+  "name": "Gloria-Md",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
@@ -7,7 +7,7 @@
     "start": "node server.js"
   },
   "keywords": [],
-  "author": "𝗠𝗿𝗥𝗼𝗮𝗻",
+  "author": "MrRoan",
   "license": "ISC",
   "description": "",
   "dependencies": {
