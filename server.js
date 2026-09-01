@@ -7,7 +7,7 @@ require("dotenv").config();
 const socketIo = require("socket.io");
 const path = require("path");
 const fs = require("fs");
-const { useMultiFileAuthState, makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require("@whiskeysockets/baileys");
+const { useMultiFileAuthState, makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage } = require("@whiskeysockets/baileys");
 const P = require("pino");
 
 const app = express();
@@ -17,7 +17,7 @@ const port = process.env.PORT || 3000;
 
 const GroupEvents = require("./events/GroupEvents");
 const store = require('./lib/store');
-const { jidBase, isPrimaryOwner } = require('./lib/permissions');
+const { jidBase, isPrimaryOwner, isOwnerOrSudo } = require('./lib/permissions');
 const presence = require('./lib/presence');
 
 // Middleware
@@ -95,7 +95,7 @@ io.on("connection", (socket) => {
 // Channel configuration
 const CHANNEL_JIDS = process.env.CHANNEL_JIDS ? process.env.CHANNEL_JIDS.split(',') : [
     "120363427946378181@newsletter",
-    "120363401559573199@newsletter",
+   
 
 ];
 
@@ -106,7 +106,7 @@ let PREFIX = process.env.PREFIX || ".";
 const BOT_NAME = process.env.BOT_NAME || "𝗚𝗟𝗢𝗥𝗜𝗔-𝗠𝗗";
 const OWNER_NAME = process.env.OWNER_NAME || "𝗠𝗥 𝗥𝗢𝗔𝗡";
 
-const MENU_IMAGE_URL = process.env.MENU_IMAGE_URL || "https://files.catbox.moe/bq7v3f.jpg";
+const MENU_IMAGE_URL = process.env.MENU_IMAGE_URL || "https://files.catbox.moe/0dfeid.jpg";
 const REPO_LINK = process.env.REPO_LINK || "https://github.com/mrroaninc";
 
 // Auto-status configuration
@@ -359,6 +359,77 @@ async function subscribeToChannels(conn) {
 }
 
 // Function to get message type
+// FIX: résolution correcte de l'expéditeur (bug owner/sudo qui ne fonctionnait pas
+// en privé quand le message venait du propriétaire lui-même : fromMe=true sans
+// "participant", et remoteJid pointe vers le destinataire, pas vers le owner).
+// Détecte un média "vue unique" quel que soit son emballage (utilisé par .antiviewonce)
+function unwrapViewOnceForCapture(content) {
+    if (!content) return null;
+    let node = content;
+    if (node.viewOnceMessageV2) node = node.viewOnceMessageV2.message;
+    else if (node.viewOnceMessageV2Extension) node = node.viewOnceMessageV2Extension.message;
+    else if (node.viewOnceMessage) node = node.viewOnceMessage.message;
+    if (!node || node === content) {
+        // Pas d'emballage : vérifier le flag viewOnce direct
+        const types = ['imageMessage', 'videoMessage', 'audioMessage'];
+        for (const t of types) {
+            if (content[t] && content[t].viewOnce) return { type: t, message: content };
+        }
+        return null;
+    }
+    const types = ['imageMessage', 'videoMessage', 'audioMessage'];
+    for (const t of types) {
+        if (node[t]) return { type: t, message: node };
+    }
+    return null;
+}
+
+function getSenderJid(message, conn) {
+    if (message.key.fromMe) return conn.user.id;
+    return message.key.participant || message.key.remoteJid;
+}
+
+// --- CHATBOT : utilise la même clé API Mistral que ROAN AI ---
+async function handleChatbot(conn, message, from, text) {
+    const senderJid = getSenderJid(message, conn);
+    if (jidBase(senderJid) === jidBase(conn.user.id)) return; // ne pas répondre à soi-même
+    // Compatible Mistral AI (même stack que ROAN AI) par défaut, mais reste
+    // surchargeable si un jour tu veux pointer vers un autre fournisseur OpenAI-compatible.
+    const apiUrl = process.env.CHATBOT_API_URL || 'https://api.mistral.ai/v1/chat/completions';
+    const apiKey = process.env.MISTRAL_API_KEY || process.env.CHATBOT_API_KEY;
+    const model = process.env.CHATBOT_MODEL || 'mistral-large-latest';
+
+    let reply;
+    if (!apiKey) {
+        reply = `🤖 *Chatbot GLORIA-MD*\n\nLe chatbot est activé mais aucune clé API Mistral n'est configurée. Ajoute \`MISTRAL_API_KEY\` (la même que celle de ROAN AI) dans le fichier .env.`;
+    } else {
+        try {
+            const fetch = require('node-fetch');
+            const creatorInfo = process.env.CREATOR_INFO ||
+                `${OWNER_NAME} (${process.env.DEV_NAME || OWNER_NAME}), développeur indépendant basé au Cameroun, fondateur de MR ROAN Inc. ` +
+                `Contact/réseaux : Telegram @mrroaninc, TikTok @mrroaninc, Instagram @mr.roan${process.env.DEV_EMAIL ? `, email ${process.env.DEV_EMAIL}` : ''}.`;
+            const systemPrompt = `Tu es ${BOT_NAME}, un assistant WhatsApp sympathique créé par ${OWNER_NAME}. ` +
+                `Si on te demande qui t'a créé, qui est ton développeur/propriétaire, ou comment le contacter, réponds avec ces informations précises : ${creatorInfo} ` +
+                `Ne dis jamais que tu es un modèle d'IA générique ou que tu ignores qui t'a créé. Réponds brièvement, en français, sauf si on t'écrit dans une autre langue.`;
+            const res = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                body: JSON.stringify({
+                    model,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: text }
+                    ]
+                })
+            }).then(r => r.json());
+            reply = res?.choices?.[0]?.message?.content?.trim() || res?.message || '🤖 Je n\'ai pas compris, peux-tu reformuler ?';
+        } catch (e) {
+            reply = '⚠️ Le chatbot est momentanément indisponible.';
+        }
+    }
+    await conn.sendMessage(from, { text: reply }, { quoted: message }).catch(() => {});
+}
+
 function getMessageType(message) {
     if (message.message?.conversation) return 'TEXT';
     if (message.message?.extendedTextMessage) return 'TEXT';
@@ -406,7 +477,7 @@ function getMessageText(message, messageType) {
 }
 
 // Function to get quoted message details
-function getQuotedMessage(message) {
+function getQuotedMessage(message, conn) {
     if (!message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
         return null;
     }
@@ -416,7 +487,7 @@ function getQuotedMessage(message) {
         message: {
             key: {
                 remoteJid: quoted.participant || quoted.stanzaId,
-                fromMe: quoted.participant === (message.key.participant || message.key.remoteJid),
+                fromMe: quoted.participant === getSenderJid(message, conn),
                 id: quoted.stanzaId
             },
             message: quoted.quotedMessage,
@@ -473,7 +544,7 @@ async function handleMessage(conn, message, sessionId) {
 
         const from0 = message.key.remoteJid;
         const isGroup0 = from0.endsWith('@g.us');
-        const senderJid = message.key.participant || message.key.remoteJid;
+        const senderJid = getSenderJid(message, conn);
 
         // --- Bannissement global : on ignore complètement l'utilisateur banni ---
         if (store.isBanned(jidBase(senderJid)) && !isPrimaryOwner(conn, senderJid)) {
@@ -510,7 +581,31 @@ async function handleMessage(conn, message, sessionId) {
         const userPrefix = store.getPrefix(sessionId, userPrefixes.get(sessionId) || PREFIX);
         
         // Check if message starts with prefix
-        if (!body.startsWith(userPrefix)) return;
+        if (!body.startsWith(userPrefix)) {
+            // --- CHATBOT : réponse IA quand la commande n'a pas de préfixe ---
+            // Privé : toujours si activé sur ce chat.
+            // Groupe : seulement si le bot est mentionné (@) ou si on répond à un de ses messages,
+            // pour éviter que le bot ne réponde à tous les messages du groupe.
+            let shouldTriggerChatbot = false;
+            if (body && !isGroup0) {
+                shouldTriggerChatbot = true;
+            } else if (body && isGroup0) {
+                const ctx = message.message?.extendedTextMessage?.contextInfo;
+                const mentioned = ctx?.mentionedJid || [];
+                const botBase = jidBase(conn.user.id);
+                const isMentioned = mentioned.some(j => jidBase(j) === botBase);
+                const isReplyToBot = ctx?.participant && jidBase(ctx.participant) === botBase;
+                shouldTriggerChatbot = isMentioned || isReplyToBot;
+            }
+            // Le réglage est global pour les privés (chatbot_dm), et par groupe pour les groupes
+            const chatbotEnabled = isGroup0 ? store.getGroupToggle(from0, 'chatbot') : store.getToggle('chatbot_dm');
+            if (shouldTriggerChatbot && chatbotEnabled) {
+                // Retire la mention littérale (@numéro) du texte avant de l'envoyer au chatbot
+                const cleanText = body.replace(/@\d+/g, '').trim() || body;
+                try { await handleChatbot(conn, message, from0, cleanText); } catch (e) { console.error('Chatbot error:', e); }
+            }
+            return;
+        }
 
         // Parse command and arguments
         const args = body.slice(userPrefix.length).trim().split(/ +/);
@@ -519,7 +614,7 @@ async function handleMessage(conn, message, sessionId) {
         console.log(`🔍 Detected command: ${commandName} from user: ${sessionId}`);
 
         // --- Mode SELF : le bot ne répond qu'au propriétaire/sudo en dehors des DM du owner ---
-        if (store.getMode() === 'self' && !isPrimaryOwner(conn, senderJid)) {
+        if (store.getMode() === 'self' && !isOwnerOrSudo(conn, senderJid)) {
             return;
         }
 
@@ -557,13 +652,13 @@ async function handleMessage(conn, message, sessionId) {
                 }
                 
                 // Get quoted message if exists
-                const quotedMessage = getQuotedMessage(message);
+                const quotedMessage = getQuotedMessage(message, conn);
                 
                 // Prepare parameters in the format your commands expect
                 const m = {
                     mentionedJid: message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [],
                     quoted: quotedMessage,
-                    sender: message.key.participant || message.key.remoteJid
+                    sender: getSenderJid(message, conn)
                 };
                 
                 const q = body.slice(userPrefix.length + commandName.length).trim();
@@ -586,7 +681,7 @@ async function handleMessage(conn, message, sessionId) {
                     from: from,
                     isGroup: isGroup,
                     groupMetadata: groupMetadata,
-                    sender: message.key.participant || message.key.remoteJid,
+                    sender: getSenderJid(message, conn),
                     isAdmins: isAdmins,
                     isCreator: isCreator,
                     sessionId: sessionId,
@@ -677,7 +772,7 @@ async function handleBuiltInCommands(conn, message, commandName, args, sessionId
             case 'prefix':
                 // Check if user is the bot owner
                 const ownerJid = conn.user.id;
-                const messageSenderJid = message.key.participant || message.key.remoteJid;
+                const messageSenderJid = getSenderJid(message, conn);
                 
                 if (messageSenderJid !== ownerJid && !messageSenderJid.includes(ownerJid.split(':')[0])) {
                     await conn.sendMessage(from, { 
@@ -909,6 +1004,42 @@ ${channelStatus}
         } catch (e) {}
     });
 
+    // Antigcstatus : annule les changements de nom/description/photo du groupe
+    // faits par des non-admins/non-propriétaire quand l'option est activée
+    conn.ev.on('groups.update', async (updates) => {
+        for (const update of updates) {
+            try {
+                const groupId = update.id;
+                if (!groupId || !groupId.endsWith('@g.us')) continue;
+                if (!store.getGroupToggle(groupId, 'antigcstatus')) {
+                    // on garde quand même le cache à jour pour les futures comparaisons
+                    if (update.subject || update.desc) {
+                        const meta = await conn.groupMetadata(groupId).catch(() => null);
+                        if (meta) store.cacheGroupMeta(groupId, { subject: meta.subject, desc: meta.desc });
+                    }
+                    continue;
+                }
+                const cached = store.getCachedGroupMeta(groupId);
+                const meta = await conn.groupMetadata(groupId).catch(() => null);
+                if (!meta) continue;
+
+                if (cached && update.subject && update.subject !== cached.subject) {
+                    try {
+                        await conn.groupUpdateSubject(groupId, cached.subject);
+                        await conn.sendMessage(groupId, { text: `🛡️ Antigcstatus : nom du groupe restauré.` });
+                    } catch (e) {}
+                }
+                if (cached && update.desc !== undefined && update.desc !== cached.desc) {
+                    try {
+                        await conn.groupUpdateDescription(groupId, cached.desc || '');
+                        await conn.sendMessage(groupId, { text: `🛡️ Antigcstatus : description du groupe restaurée.` });
+                    } catch (e) {}
+                }
+                store.cacheGroupMeta(groupId, { subject: meta.subject, desc: meta.desc });
+            } catch (e) {}
+        }
+    });
+
     // Bio automatique (autobio) - mise à jour toutes les 5 minutes si activé
     setInterval(async () => {
         try {
@@ -981,6 +1112,23 @@ ${channelStatus}
             }
             if (from === 'status@broadcast' && store.getToggle('autoviewstatus')) {
                 conn.readMessages([message.key]).catch(() => {});
+            }
+
+            // --- ANTIVIEWONCE : capture auto des médias vue-unique, renvoyés au propriétaire ---
+            if (store.getToggle('antiviewonce') && from !== 'status@broadcast' && !message.key.fromMe) {
+                try {
+                    const found = unwrapViewOnceForCapture(message.message);
+                    if (found) {
+                        const ownerJid = (process.env.OWNER_NUMBER || '').split(',')[0];
+                        const targetJid = ownerJid ? `${ownerJid}@s.whatsapp.net` : conn.user.id;
+                        const buffer = await downloadMediaMessage({ message: found.message, key: message.key }, 'buffer', {});
+                        const senderInfo = getSenderJid(message, conn);
+                        const caption = `🔓 *Antiviewonce* : média capturé automatiquement\n👤 Envoyé par : @${senderInfo.split('@')[0]}\n💬 Chat : ${from}`;
+                        if (found.type === 'imageMessage') await conn.sendMessage(targetJid, { image: buffer, caption, mentions: [senderInfo] });
+                        else if (found.type === 'videoMessage') await conn.sendMessage(targetJid, { video: buffer, caption, mentions: [senderInfo] });
+                        else if (found.type === 'audioMessage') await conn.sendMessage(targetJid, { audio: buffer, mimetype: 'audio/mp4' });
+                    }
+                } catch (e) {}
             }
             
             // Check if it's a newsletter message
