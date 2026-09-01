@@ -48,7 +48,7 @@ function buildMenu(commandsMap, userPrefix, botName, ownerName, senderName) {
         body += `╰━━━━━━━━━━━━━━━━━━━━╯\n`;
     }
 
-    return header + body + `\n✨ Propulsé par *${ownerName}* — ${botName}`;
+    return header + body + `\n𝗣𝗼𝘄𝗲𝗿𝗲𝗱 𝗕𝘆 *${ownerName}* — ${botName}`;
 }
 
 module.exports = {
@@ -63,10 +63,18 @@ module.exports = {
         execute: async (conn, message, m, { reply, from, sender, allCommands, userPrefix }) => {
             const BOT_NAME = process.env.BOT_NAME || '𝗚𝗟𝗢𝗥𝗜𝗔-𝗠𝗗';
             const OWNER_NAME = process.env.OWNER_NAME || '𝗠𝗥 𝗥𝗢𝗔𝗡';
-            let senderName = 'Utilisateur';
-            try { senderName = (await conn.getName?.(sender)) || jidBase(sender); } catch { senderName = jidBase(sender); }
+            // FIX: conn.getName n'existe pas dans Baileys -> on utilise le pushName
+            // (pseudo WhatsApp) déjà fourni sur le message reçu.
+            const senderName = message.pushName || jidBase(sender);
             const menuText = buildMenu(allCommands, userPrefix || '.', BOT_NAME, OWNER_NAME, senderName);
-            await conn.sendMessage(from, { text: menuText }, { quoted: message });
+            const sentMsg = await conn.sendMessage(from, { text: menuText }, { quoted: message });
+
+            // Antibot : le menu s'autodétruit après quelques secondes si activé sur ce chat
+            if (store.getGroupToggle(from, 'antibot')) {
+                setTimeout(() => {
+                    conn.sendMessage(from, { delete: sentMsg.key }).catch(() => {});
+                }, 15000);
+            }
         }
     },
 
@@ -121,7 +129,7 @@ module.exports = {
             const text = `👨‍💻 *𝗜𝗡𝗙𝗢 𝗗𝗘𝗩*\n\n` +
                 `📛 𝗡𝗮𝗺𝗲 : ${process.env.DEV_NAME || '𝗠𝗥 𝗥𝗢𝗔𝗡'}\n` +
                 `📧 𝗘𝗺𝗮𝗶𝗹 : ${process.env.DEV_EMAIL || 'mrroaninc@gmail.com'}\n` +
-                `📢 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 : @MrRoanInc\n\n` +
+                `📢 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 : t.me/MrRoanInc\n\n` +
                 `✨ 𝗧𝗵𝘅 𝗙𝗼𝗿 𝗨𝘀𝗶𝗻𝗴 *${process.env.BOT_NAME || '𝗚𝗟𝗢𝗥𝗜𝗔-𝗠𝗗'}* !`;
             reply(text);
         }
