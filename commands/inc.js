@@ -588,21 +588,20 @@ module.exports = {
         }
     },
 
-    setpp: {
-        pattern: 'setpp',
-        desc: 'Changer la photo de profil du bot (répondre à une image)',
+    getpp: {
+        pattern: 'getpp',
+        desc: "Récupérer la photo de profil d'un utilisateur ou du groupe",
         category: 'owner',
-        use: '.setpp (en réponse à une image)',
+        use: '.getpp [@user] (ou seul dans un groupe pour la photo du groupe)',
         filename: __filename,
-        execute: async (conn, message, m, { reply, sender }) => {
-            if (!isPrimaryOwner(conn, sender)) return reply('❌ Réservé au propriétaire du bot.');
-            const quotedMsg = message.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-            if (!quotedMsg || !quotedMsg.imageMessage) return reply('❌ Réponds à une image avec .setpp');
+        execute: async (conn, message, m, { from, isGroup, reply }) => {
+            const target = getTarget(m) || (!isGroup ? from : null) || from;
             try {
-                const buffer = await downloadMediaMessage({ message: quotedMsg, key: message.key }, 'buffer', {});
-                await conn.updateProfilePicture(conn.user.id, buffer);
-                reply('✅ Photo de profil mise à jour.');
-            } catch (e) { reply('⚠️ Échec du changement de photo.'); }
+                const url = await conn.profilePictureUrl(target, 'image');
+                await conn.sendMessage(message.key.remoteJid, { image: { url }, caption: `🖼️ Photo de profil` }, { quoted: message });
+            } catch (e) {
+                reply('❌ Impossible de récupérer cette photo de profil (peut-être aucune photo définie).');
+            }
         }
     },
 
@@ -688,7 +687,7 @@ module.exports = {
         use: '.self',
         filename: __filename,
         execute: async (conn, message, m, { reply, sender }) => {
-            if (!isPrimaryOwner(conn, sender)) return reply('❌ Réservé au propriétaire du bot.');
+            if (!isOwnerOrSudo(conn, sender)) return reply('❌ Réservé au propriétaire/sudo.');
             store.setMode('self');
             reply('🔒 Mode SELF activé : seul le propriétaire peut utiliser le bot.');
         }
@@ -701,7 +700,7 @@ module.exports = {
         use: '.public',
         filename: __filename,
         execute: async (conn, message, m, { reply, sender }) => {
-            if (!isPrimaryOwner(conn, sender)) return reply('❌ Réservé au propriétaire du bot.');
+            if (!isOwnerOrSudo(conn, sender)) return reply('❌ Réservé au propriétaire/sudo.');
             store.setMode('public');
             reply('🌍 Mode PUBLIC activé : tout le monde peut utiliser le bot.');
         }
