@@ -1,7 +1,8 @@
 // 𝗕𝗢𝗧 𝗡𝗔𝗠𝗘 ➳ 𝗚𝗟𝗢𝗥𝗜𝗔 𝗠𝗗
 // 𝗕𝗢𝗧 𝗗𝗘𝗩 ➳ 𝗠𝗥 𝗥𝗢𝗔𝗡
 //𝗖𝗢𝗡𝗧𝗔𝗖𝗧 𝗗𝗘𝗩 ➳ +237689301479
-const { isJidGroup } = require('@whiskeysockets/baileys');
+const store = require('../lib/store');
+const { jidBase, isPrimaryOwner } = require('../lib/permissions');
 
 const defaultProfilePics = [
   'https://files.catbox.moe/bq7v3f.jpg',
@@ -23,8 +24,33 @@ const getContextInfo = (mentionedJids) => ({
 
 module.exports = async (conn, update) => {
   try {
-    const { id, participants, action } = update;
-    if (!id || !isJidGroup(id) || !participants) return;
+    const { id, participants, action, author } = update;
+    // FIX: isJidGroup peut être absent/instable selon la version de Baileys,
+    // ce qui faisait échouer silencieusement tout le welcome/goodbye.
+    if (!id || !id.endsWith('@g.us') || !participants) return;
+
+    const botBase = jidBase(conn?.user?.id);
+    const authorBase = author ? jidBase(author) : null;
+    const actionIsFromBotOrOwner = authorBase && (authorBase === botBase || isPrimaryOwner(conn, author));
+
+    // === AUTOPROMOTE : promouvoir automatiquement les nouveaux membres ===
+    if (action === 'add' && store.getGroupToggle(id, 'autopromote')) {
+      for (const participant of participants) {
+        try { await conn.groupParticipantsUpdate(id, [participant], 'promote'); } catch (e) {}
+      }
+    }
+
+    // === ANTIDEMOTE : protège le bot et le propriétaire contre une rétrogradation ===
+    if (action === 'demote' && store.getGroupToggle(id, 'antidemote') && !actionIsFromBotOrOwner) {
+      const ownerNumbers = (process.env.OWNER_NUMBER || '').split(',').map(n => n.trim()).filter(Boolean);
+      const protectedTargets = participants.filter(p => jidBase(p) === botBase || ownerNumbers.includes(jidBase(p)));
+      for (const target of protectedTargets) {
+        try {
+          await conn.groupParticipantsUpdate(id, [target], 'promote');
+          await conn.sendMessage(id, { text: `🛡️ Anti-demote : @${target.split('@')[0]} a été re-promu automatiquement.`, mentions: [target] });
+        } catch (e) {}
+      }
+    }
 
     const groupMetadata = await conn.groupMetadata(id);
     const groupName = groupMetadata.subject || "Group";
@@ -72,7 +98,7 @@ module.exports = async (conn, update) => {
 ╭───❖ 😢 *𝗚𝗢𝗢𝗗𝗕𝗬𝗘* ❖───
 │ 👋 𝗕𝘆𝗲 @${userName}!
 │ 🏠 𝗬𝗼𝘂 𝗟𝗲𝗳𝘁 : *${groupName}*
-│ 🕒 Time: *${timestamp}*
+│ 🕒 𝗧𝗶𝗺𝗲: *${timestamp}*
 │ 
 ╰❖ 𝗣𝗼𝘄𝗲𝗿𝗲𝗱 𝗕𝘆 𝗚𝗟𝗢𝗥𝗜𝗔 𝗠𝗗 ❖─
         `.trim();
