@@ -1,5 +1,5 @@
 {
-  "name": "Gloria-Md",
+  "name": "𝗚𝗹𝗼𝗿𝗶𝗮-𝗠𝗗",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
@@ -7,7 +7,7 @@
     "start": "node server.js"
   },
   "keywords": [],
-  "author": "MrRoan",
+  "author": "𝗠𝗿𝗥𝗼𝗮𝗻",
   "license": "ISC",
   "description": "",
   "dependencies": {
@@ -20,6 +20,7 @@
     "colors": "^1.4.0",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
+    "fluent-ffmpeg": "^2.1.2",
     "fs-extra": "^11.3.2",
     "node-fetch": "^3.3.2",
     "pino": "^9.9.5",
