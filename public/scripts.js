@@ -95,7 +95,7 @@ document.addEventListener("DOMContentLoaded", () => {
       showStatus(`
         <div style="text-align: center; color: var(--warning);">
           <i class="fas fa-exclamation-triangle" style="font-size: 2rem; margin-bottom: 10px;"></i>
-          <p>Please follow all our channels first to use LUNA-MD.</p>
+          <p>Please follow all our channels first to use GLORIA-MD.</p>
           <button class="btn" style="margin-top: 10px;" onclick="document.getElementById('channelModal').classList.add('active')">
             <i class="fas fa-bell"></i> Show Channels
           </button>
@@ -189,7 +189,7 @@ document.addEventListener("DOMContentLoaded", () => {
       <div style="text-align: center; color: var(--success);">
         <i class="fas fa-check-circle" style="font-size: 3rem; margin-bottom: 20px;"></i>
         <h3 style="margin-bottom: 16px;">✅ Successfully Linked!</h3>
-        <p>Your device has been successfully connected. You can now use LUNA-MD features.</p>
+        <p>Your device has been successfully connected. You can now use GLORIA-MD features.</p>
         <p style="margin-top: 12px; opacity: 0.8;"><small>Session ID: ${sessionId}</small></p>
       </div>
     `, "success");
