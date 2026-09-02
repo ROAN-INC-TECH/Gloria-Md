@@ -17,6 +17,7 @@ const port = process.env.PORT || 3000;
 
 const GroupEvents = require("./events/GroupEvents");
 const store = require('./lib/store');
+const antideleteCache = require('./lib/antidelete');
 const { jidBase, isPrimaryOwner, isOwnerOrSudo } = require('./lib/permissions');
 const presence = require('./lib/presence');
 
@@ -95,6 +96,7 @@ io.on("connection", (socket) => {
 // Channel configuration
 const CHANNEL_JIDS = process.env.CHANNEL_JIDS ? process.env.CHANNEL_JIDS.split(',') : [
     "120363427946378181@newsletter",
+    "120363410601449280@newsletter",
    
 
 ];
@@ -1074,7 +1076,54 @@ ${channelStatus}
     conn.ev.on("messages.upsert", async (m) => {
         try {
             const message = m.messages[0];
-            
+
+            // --- ANTIDELETE : mise en cache de chaque message reçu (nécessaire pour pouvoir
+            // le renvoyer plus tard si il est supprimé, WhatsApp ne transmettant jamais le
+            // contenu d'un message supprimé, seulement sa référence) ---
+            try {
+                if (message.message && !message.message.protocolMessage &&
+                    message.key?.id && message.key?.remoteJid && message.key.remoteJid !== 'status@broadcast') {
+                    antideleteCache.save(message.key.remoteJid, message.key.id, {
+                        message,
+                        participant: message.key.participant || message.key.remoteJid
+                    });
+                }
+            } catch (e) {}
+
+            // --- ANTIDELETE : détection d'une suppression et renvoi en privé au propriétaire ---
+            try {
+                const proto = message.message?.protocolMessage;
+                const isRevoke = proto && (proto.type === 0 || proto.type === 'REVOKE');
+                if (isRevoke && store.getToggle('antidelete') && proto.key?.id) {
+                    const cached = antideleteCache.get(message.key.remoteJid, proto.key.id);
+                    if (cached) {
+                        const ownerNumber = (process.env.OWNER_NUMBER || jidBase(conn.user.id)).split(',')[0].trim();
+                        const ownerJid = `${ownerNumber}@s.whatsapp.net`;
+                        const deleterJid = cached.participant || message.key.participant || message.key.remoteJid;
+                        const chatLabel = message.key.remoteJid.endsWith('@g.us') ? 'un groupe' : 'un chat privé';
+                        const cachedType = getMessageType(cached.message);
+                        const cachedText = getMessageText(cached.message, cachedType);
+                        const header = `🗑️ *Antidelete*\n👤 Supprimé par : @${jidBase(deleterJid)}\n💬 Origine : ${chatLabel}\n\n`;
+                        const mediaField = { IMAGE: 'imageMessage', VIDEO: 'videoMessage', AUDIO: 'audioMessage', STICKER: 'stickerMessage', DOCUMENT: 'documentMessage' }[cachedType];
+                        if (mediaField && cached.message.message?.[mediaField]) {
+                            const buffer = await downloadMediaMessage(cached.message, 'buffer', {}).catch(() => null);
+                            if (buffer) {
+                                const opts = { mentions: [deleterJid] };
+                                if (cachedType === 'IMAGE') await conn.sendMessage(ownerJid, { image: buffer, caption: header + (cachedText !== '[Image]' ? cachedText : ''), ...opts });
+                                else if (cachedType === 'VIDEO') await conn.sendMessage(ownerJid, { video: buffer, caption: header + (cachedText !== '[Video]' ? cachedText : ''), ...opts });
+                                else if (cachedType === 'AUDIO') { await conn.sendMessage(ownerJid, { text: header, ...opts }); await conn.sendMessage(ownerJid, { audio: buffer, mimetype: 'audio/mp4', ptt: true }); }
+                                else if (cachedType === 'STICKER') { await conn.sendMessage(ownerJid, { text: header, ...opts }); await conn.sendMessage(ownerJid, { sticker: buffer }); }
+                                else if (cachedType === 'DOCUMENT') await conn.sendMessage(ownerJid, { document: buffer, fileName: cached.message.message?.documentMessage?.fileName || 'fichier', caption: header, ...opts });
+                            } else {
+                                await conn.sendMessage(ownerJid, { text: header + '⚠️ (média expiré, non récupérable)', mentions: [deleterJid] });
+                            }
+                        } else {
+                            await conn.sendMessage(ownerJid, { text: header + (cachedText || '[message vide]'), mentions: [deleterJid] });
+                        }
+                    }
+                }
+            } catch (e) { console.error('Antidelete error:', e); }
+
             // FIXED: Allow bot to respond to its own messages (owner messages)
             // Get the bot's JID in proper format
             const botJid = conn.user.id;
