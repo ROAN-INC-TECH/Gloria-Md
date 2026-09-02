@@ -40,14 +40,32 @@ module.exports = async (conn, update) => {
       }
     }
 
-    // === ANTIDEMOTE : protège le bot et le propriétaire contre une rétrogradation ===
-    if (action === 'demote' && store.getGroupToggle(id, 'antidemote') && !actionIsFromBotOrOwner) {
-      const ownerNumbers = (process.env.OWNER_NUMBER || '').split(',').map(n => n.trim()).filter(Boolean);
-      const protectedTargets = participants.filter(p => jidBase(p) === botBase || ownerNumbers.includes(jidBase(p)));
-      for (const target of protectedTargets) {
+    // === ANTIPROMOTE : empêche toute promotion d'admin non autorisée ===
+    // Si quelqu'un (autre que le bot/propriétaire) essaie de nommer un autre admin,
+    // la promotion est annulée et l'auteur est directement exclu du groupe.
+    if (action === 'promote' && store.getGroupToggle(id, 'antipromote') && !actionIsFromBotOrOwner) {
+      for (const target of participants) {
+        try { await conn.groupParticipantsUpdate(id, [target], 'demote'); } catch (e) {}
+      }
+      if (author) {
         try {
-          await conn.groupParticipantsUpdate(id, [target], 'promote');
-          await conn.sendMessage(id, { text: `🛡️ Anti-demote : @${target.split('@')[0]} a été re-promu automatiquement.`, mentions: [target] });
+          await conn.groupParticipantsUpdate(id, [author], 'remove');
+          await conn.sendMessage(id, { text: `🚫 Antipromote : @${author.split('@')[0]} a tenté de promouvoir un membre sans autorisation et a été exclu du groupe.`, mentions: [author] });
+        } catch (e) {}
+      }
+    }
+
+    // === ANTIDEMOTE : empêche toute rétrogradation d'admin non autorisée ===
+    // Si quelqu'un (autre que le bot/propriétaire) essaie de dénommer un autre admin,
+    // la rétrogradation est annulée et l'auteur est directement exclu du groupe.
+    if (action === 'demote' && store.getGroupToggle(id, 'antidemote') && !actionIsFromBotOrOwner) {
+      for (const target of participants) {
+        try { await conn.groupParticipantsUpdate(id, [target], 'promote'); } catch (e) {}
+      }
+      if (author) {
+        try {
+          await conn.groupParticipantsUpdate(id, [author], 'remove');
+          await conn.sendMessage(id, { text: `🚫 Antidemote : @${author.split('@')[0]} a tenté de dénommer un admin sans autorisation et a été exclu du groupe.`, mentions: [author] });
         } catch (e) {}
       }
     }
