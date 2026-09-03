@@ -5,9 +5,9 @@ const store = require('../lib/store');
 const { jidBase, isPrimaryOwner } = require('../lib/permissions');
 
 const defaultProfilePics = [
-  'https://files.catbox.moe/bq7v3f.jpg',
-  'https://files.catbox.moe/1g7ue4.jpg',
-  'https://files.catbox.moe/p8uyfj.jpg',
+  'https://i.ibb.co/hFkhFqY5/jawadmd.jpg',
+  'https://i.ibb.co/hFkhFqY5/jawadmd.jpg',
+  'https://i.ibb.co/hFkhFqY5/jawadmd.jpg',
 ];
 
 // Newsletter context (for forwarded-style look)
