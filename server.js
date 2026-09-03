@@ -108,7 +108,7 @@ let PREFIX = process.env.PREFIX || ".";
 const BOT_NAME = process.env.BOT_NAME || "𝗚𝗟𝗢𝗥𝗜𝗔-𝗠𝗗";
 const OWNER_NAME = process.env.OWNER_NAME || "𝗠𝗥 𝗥𝗢𝗔𝗡";
 
-const MENU_IMAGE_URL = process.env.MENU_IMAGE_URL || "https://files.catbox.moe/0dfeid.jpg";
+const MENU_IMAGE_URL = process.env.MENU_IMAGE_URL || "https://i.ibb.co/hFkhFqY5/jawadmd.jpg";
 const REPO_LINK = process.env.REPO_LINK || "https://github.com/mrroaninc";
 
 // Auto-status configuration
