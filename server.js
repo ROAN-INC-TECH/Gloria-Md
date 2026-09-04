@@ -361,10 +361,11 @@ async function subscribeToChannels(conn) {
 }
 
 // Function to get message type
-// FIX: résolution correcte de l'expéditeur (bug owner/sudo qui ne fonctionnait pas
-// en privé quand le message venait du propriétaire lui-même : fromMe=true sans
-// "participant", et remoteJid pointe vers le destinataire, pas vers le owner).
-// Détecte un média "vue unique" quel que soit son emballage (utilisé par .antiviewonce)
+// FIX: correctly resolves the sender (an owner/sudo bug used to happen
+// in private chats when the message came from the owner's own account:
+// fromMe=true with no "participant", and remoteJid points at the
+// recipient, not at the owner).
+// Detects a "view once" media regardless of how it's wrapped (used by .antiviewonce)
 function unwrapViewOnceForCapture(content) {
     if (!content) return null;
     let node = content;
@@ -372,7 +373,7 @@ function unwrapViewOnceForCapture(content) {
     else if (node.viewOnceMessageV2Extension) node = node.viewOnceMessageV2Extension.message;
     else if (node.viewOnceMessage) node = node.viewOnceMessage.message;
     if (!node || node === content) {
-        // Pas d'emballage : vérifier le flag viewOnce direct
+        // No wrapper: check the direct viewOnce flag
         const types = ['imageMessage', 'videoMessage', 'audioMessage'];
         for (const t of types) {
             if (content[t] && content[t].viewOnce) return { type: t, message: content };
@@ -391,42 +392,45 @@ function getSenderJid(message, conn) {
     return message.key.participant || message.key.remoteJid;
 }
 
-// --- CHATBOT : utilise la même clé API Mistral que ROAN AI ---
+// --- CHATBOT: uses the same Mistral API key as ROAN AI ---
+// NOTE: this used to call `require('node-fetch')`. node-fetch v3 is ESM-only
+// and cannot be required from CommonJS, so every chatbot call was silently
+// throwing and the feature never worked. Switched to axios (already a
+// project dependency) to make .chatbot actually operational.
 async function handleChatbot(conn, message, from, text) {
     const senderJid = getSenderJid(message, conn);
-    if (jidBase(senderJid) === jidBase(conn.user.id)) return; // ne pas répondre à soi-même
-    // Compatible Mistral AI (même stack que ROAN AI) par défaut, mais reste
-    // surchargeable si un jour tu veux pointer vers un autre fournisseur OpenAI-compatible.
+    if (jidBase(senderJid) === jidBase(conn.user.id)) return; // don't reply to ourselves
+    // Mistral AI compatible (same stack as ROAN AI) by default, but can still
+    // be overridden to point at another OpenAI-compatible provider.
     const apiUrl = process.env.CHATBOT_API_URL || 'https://api.mistral.ai/v1/chat/completions';
     const apiKey = process.env.MISTRAL_API_KEY || process.env.CHATBOT_API_KEY;
     const model = process.env.CHATBOT_MODEL || 'mistral-large-latest';
 
     let reply;
     if (!apiKey) {
-        reply = `🤖 *Chatbot GLORIA-MD*\n\nLe chatbot est activé mais aucune clé API Mistral n'est configurée. Ajoute \`MISTRAL_API_KEY\` (la même que celle de ROAN AI) dans le fichier .env.`;
+        reply = `🤖 *GLORIA-MD Chatbot*\n\nThe chatbot is enabled but no Mistral API key is configured. Add \`MISTRAL_API_KEY\` (the same one used by ROAN AI) to the .env file.`;
     } else {
         try {
-            const fetch = require('node-fetch');
+            const axios = require('axios');
             const creatorInfo = process.env.CREATOR_INFO ||
-                `${OWNER_NAME} (${process.env.DEV_NAME || OWNER_NAME}), développeur indépendant basé au Cameroun, fondateur de MR ROAN Inc. ` +
-                `Contact/réseaux : Telegram @mrroaninc, TikTok @mrroaninc, Instagram @mr.roan${process.env.DEV_EMAIL ? `, email ${process.env.DEV_EMAIL}` : ''}.`;
-            const systemPrompt = `Tu es ${BOT_NAME}, un assistant WhatsApp sympathique créé par ${OWNER_NAME}. ` +
-                `Si on te demande qui t'a créé, qui est ton développeur/propriétaire, ou comment le contacter, réponds avec ces informations précises : ${creatorInfo} ` +
-                `Ne dis jamais que tu es un modèle d'IA générique ou que tu ignores qui t'a créé. Réponds brièvement, en français, sauf si on t'écrit dans une autre langue.`;
-            const res = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-                body: JSON.stringify({
-                    model,
-                    messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: text }
-                    ]
-                })
-            }).then(r => r.json());
-            reply = res?.choices?.[0]?.message?.content?.trim() || res?.message || '🤖 Je n\'ai pas compris, peux-tu reformuler ?';
+                `${OWNER_NAME} (${process.env.DEV_NAME || OWNER_NAME}), independent developer based in Cameroon, founder of MR ROAN Inc. ` +
+                `Contact/socials: Telegram @mrroaninc, TikTok @mrroaninc, Instagram @mr.roan${process.env.DEV_EMAIL ? `, email ${process.env.DEV_EMAIL}` : ''}.`;
+            const systemPrompt = `You are ${BOT_NAME}, a friendly WhatsApp assistant created by ${OWNER_NAME}. ` +
+                `If asked who created you, who your developer/owner is, or how to contact them, answer with this exact information: ${creatorInfo} ` +
+                `Never say you're a generic AI model or that you don't know who created you. Reply briefly, in French, unless the person writes to you in another language.`;
+            const { data: res } = await axios.post(apiUrl, {
+                model,
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: text }
+                ]
+            }, {
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` }
+            });
+            reply = res?.choices?.[0]?.message?.content?.trim() || res?.message || "🤖 I didn't quite get that, could you rephrase?";
         } catch (e) {
-            reply = '⚠️ Le chatbot est momentanément indisponible.';
+            console.error('Chatbot API error:', e?.response?.data || e.message);
+            reply = '⚠️ The chatbot is temporarily unavailable.';
         }
     }
     await conn.sendMessage(from, { text: reply }, { quoted: message }).catch(() => {});
@@ -479,6 +483,17 @@ function getMessageText(message, messageType) {
 }
 
 // Function to get quoted message details
+// Heuristic used by .antibot: guesses whether a text message looks like
+// another WhatsApp bot's command menu (box-drawing characters + typical
+// menu keywords, or a long multi-line listing).
+function looksLikeBotMenu(text) {
+    if (!text || text.length < 40) return false;
+    const menuKeywords = /(menu|prefix|préfixe|owner|propriétaire|commands|commandes|uptime|ping)/i;
+    const boxChars = /[╭╮╰╯┃│═━▪●•]/;
+    const lineCount = text.split('\n').filter(Boolean).length;
+    return menuKeywords.test(text) && (boxChars.test(text) || lineCount >= 6);
+}
+
 function getQuotedMessage(message, conn) {
     if (!message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
         return null;
@@ -548,7 +563,7 @@ async function handleMessage(conn, message, sessionId) {
         const isGroup0 = from0.endsWith('@g.us');
         const senderJid = getSenderJid(message, conn);
 
-        // --- Bannissement global : on ignore complètement l'utilisateur banni ---
+        // --- Global ban: fully ignore banned users ---
         if (store.isBanned(jidBase(senderJid)) && !isPrimaryOwner(conn, senderJid)) {
             return;
         }
@@ -557,7 +572,7 @@ async function handleMessage(conn, message, sessionId) {
         const messageType = getMessageType(message);
         let body = getMessageText(message, messageType);
 
-        // --- Antilink : suppression des liens si activé pour ce groupe ---
+        // --- Antilink: delete links if enabled for this group ---
         if (isGroup0 && store.isAntilink(from0) && body) {
             const linkRegex = /(https?:\/\/|www\.|chat\.whatsapp\.com)/i;
             if (linkRegex.test(body)) {
@@ -570,7 +585,7 @@ async function handleMessage(conn, message, sessionId) {
                 if (!senderIsAdmin && !isPrimaryOwner(conn, senderJid)) {
                     try { await conn.sendMessage(from0, { delete: message.key }); } catch (e) {}
                     const count = store.addWarn(from0, senderJid);
-                    await conn.sendMessage(from0, { text: `🔗 Lien détecté, message supprimé. @${senderJid.split('@')[0]} averti (${count}/3).`, mentions: [senderJid] }).catch(() => {});
+                    await conn.sendMessage(from0, { text: `🔗 Link detected, message deleted. @${senderJid.split('@')[0]} warned (${count}/3).`, mentions: [senderJid] }).catch(() => {});
                     if (count >= 3) {
                         try { await conn.groupParticipantsUpdate(from0, [senderJid], 'remove'); store.resetWarn(from0, senderJid); } catch (e) {}
                     }
@@ -584,10 +599,10 @@ async function handleMessage(conn, message, sessionId) {
         
         // Check if message starts with prefix
         if (!body.startsWith(userPrefix)) {
-            // --- CHATBOT : réponse IA quand la commande n'a pas de préfixe ---
-            // Privé : toujours si activé sur ce chat.
-            // Groupe : seulement si le bot est mentionné (@) ou si on répond à un de ses messages,
-            // pour éviter que le bot ne réponde à tous les messages du groupe.
+            // --- CHATBOT: AI reply when the message has no command prefix ---
+            // Private chat: always, if enabled for this chat.
+            // Group chat: only if the bot is mentioned (@) or someone replies to one
+            // of its messages, to avoid the bot replying to every group message.
             let shouldTriggerChatbot = false;
             if (body && !isGroup0) {
                 shouldTriggerChatbot = true;
@@ -599,10 +614,10 @@ async function handleMessage(conn, message, sessionId) {
                 const isReplyToBot = ctx?.participant && jidBase(ctx.participant) === botBase;
                 shouldTriggerChatbot = isMentioned || isReplyToBot;
             }
-            // Le réglage est global pour les privés (chatbot_dm), et par groupe pour les groupes
+            // The setting is global for private chats (chatbot_dm), and per-group for groups
             const chatbotEnabled = isGroup0 ? store.getGroupToggle(from0, 'chatbot') : store.getToggle('chatbot_dm');
             if (shouldTriggerChatbot && chatbotEnabled) {
-                // Retire la mention littérale (@numéro) du texte avant de l'envoyer au chatbot
+                // Strip the literal mention (@number) from the text before sending it to the chatbot
                 const cleanText = body.replace(/@\d+/g, '').trim() || body;
                 try { await handleChatbot(conn, message, from0, cleanText); } catch (e) { console.error('Chatbot error:', e); }
             }
@@ -615,7 +630,7 @@ async function handleMessage(conn, message, sessionId) {
 
         console.log(`🔍 Detected command: ${commandName} from user: ${sessionId}`);
 
-        // --- Mode SELF : le bot ne répond qu'au propriétaire/sudo en dehors des DM du owner ---
+        // --- SELF mode: the bot only replies to the owner/sudo outside the owner's own DMs ---
         if (store.getMode() === 'self' && !isOwnerOrSudo(conn, senderJid)) {
             return;
         }
@@ -769,7 +784,7 @@ async function handleBuiltInCommands(conn, message, commandName, args, sessionId
         }
         
         // Regular chat/group message handling
-        // NOTE: ping/menu/help/alive/runtime/devinfo sont désormais gérés par commands/menu.js
+        // NOTE: ping/menu/help/alive/runtime/devinfo are now handled by commands/menu.js
         switch (commandName) {
             case 'prefix':
                 // Check if user is the bot owner
@@ -990,13 +1005,13 @@ ${channelStatus}
         }
     });
 
-    // Suivi des membres qui rejoignent/quittent (welcome / goodbye) - enregistré UNE SEULE FOIS
+    // Track members joining/leaving (welcome / goodbye) - registered ONLY ONCE
     conn.ev.on('group-participants.update', async (update) => {
         console.log("🔥 group-participants.update fired:", update);
         await GroupEvents(conn, update);
     });
 
-    // Cache de présence (utilisé par .listonline)
+    // Presence cache (used by .listonline)
     conn.ev.on('presence.update', ({ id, presences }) => {
         try {
             if (!presences) return;
@@ -1006,15 +1021,16 @@ ${channelStatus}
         } catch (e) {}
     });
 
-    // Antigcstatus : annule les changements de nom/description/photo du groupe
-    // faits par des non-admins/non-propriétaire quand l'option est activée
+    // Protectgc: reverts group name/description changes made by non-admins/
+    // non-owner while the option is enabled (previously named "antigcstatus";
+    // renamed to free up that name for the new .gcstatus broadcast feature).
     conn.ev.on('groups.update', async (updates) => {
         for (const update of updates) {
             try {
                 const groupId = update.id;
                 if (!groupId || !groupId.endsWith('@g.us')) continue;
-                if (!store.getGroupToggle(groupId, 'antigcstatus')) {
-                    // on garde quand même le cache à jour pour les futures comparaisons
+                if (!store.getGroupToggle(groupId, 'protectgc')) {
+                    // still keep the cache up to date for future comparisons
                     if (update.subject || update.desc) {
                         const meta = await conn.groupMetadata(groupId).catch(() => null);
                         if (meta) store.cacheGroupMeta(groupId, { subject: meta.subject, desc: meta.desc });
@@ -1028,13 +1044,13 @@ ${channelStatus}
                 if (cached && update.subject && update.subject !== cached.subject) {
                     try {
                         await conn.groupUpdateSubject(groupId, cached.subject);
-                        await conn.sendMessage(groupId, { text: `🛡️ Antigcstatus : nom du groupe restauré.` });
+                        await conn.sendMessage(groupId, { text: `🛡️ Protectgc: group name restored.` });
                     } catch (e) {}
                 }
                 if (cached && update.desc !== undefined && update.desc !== cached.desc) {
                     try {
                         await conn.groupUpdateDescription(groupId, cached.desc || '');
-                        await conn.sendMessage(groupId, { text: `🛡️ Antigcstatus : description du groupe restaurée.` });
+                        await conn.sendMessage(groupId, { text: `🛡️ Protectgc: group description restored.` });
                     } catch (e) {}
                 }
                 store.cacheGroupMeta(groupId, { subject: meta.subject, desc: meta.desc });
@@ -1042,17 +1058,17 @@ ${channelStatus}
         }
     });
 
-    // Bio automatique (autobio) - mise à jour toutes les 5 minutes si activé
+    // Automatic bio (autobio) - updated every 5 minutes when enabled
     setInterval(async () => {
         try {
             if (store.getToggle('autobio')) {
-                const text = `🌙 ${BOT_NAME} • en ligne depuis ${new Date().toLocaleTimeString()}`;
+                const text = `🌙 ${BOT_NAME} • online since ${new Date().toLocaleTimeString()}`;
                 await conn.updateProfileStatus(text);
             }
         } catch (e) {}
     }, 5 * 60 * 1000);
 
-    // Vérification des horaires d'ouverture/fermeture automatique des groupes
+    // Check the automatic opening/closing schedule of groups
     setInterval(async () => {
         try {
             const schedules = store.getAllSchedules();
@@ -1077,9 +1093,9 @@ ${channelStatus}
         try {
             const message = m.messages[0];
 
-            // --- ANTIDELETE : mise en cache de chaque message reçu (nécessaire pour pouvoir
-            // le renvoyer plus tard si il est supprimé, WhatsApp ne transmettant jamais le
-            // contenu d'un message supprimé, seulement sa référence) ---
+            // --- ANTIDELETE: cache every received message (needed to be able to
+            // resend it later if it gets deleted, since WhatsApp never transmits
+            // the content of a deleted message, only a reference to it) ---
             try {
                 if (message.message && !message.message.protocolMessage &&
                     message.key?.id && message.key?.remoteJid && message.key.remoteJid !== 'status@broadcast') {
@@ -1090,7 +1106,7 @@ ${channelStatus}
                 }
             } catch (e) {}
 
-            // --- ANTIDELETE : détection d'une suppression et renvoi en privé au propriétaire ---
+            // --- ANTIDELETE: detect a deletion and forward it to the owner in DM ---
             try {
                 const proto = message.message?.protocolMessage;
                 const isRevoke = proto && (proto.type === 0 || proto.type === 'REVOKE');
@@ -1100,10 +1116,10 @@ ${channelStatus}
                         const ownerNumber = (process.env.OWNER_NUMBER || jidBase(conn.user.id)).split(',')[0].trim();
                         const ownerJid = `${ownerNumber}@s.whatsapp.net`;
                         const deleterJid = cached.participant || message.key.participant || message.key.remoteJid;
-                        const chatLabel = message.key.remoteJid.endsWith('@g.us') ? 'un groupe' : 'un chat privé';
+                        const chatLabel = message.key.remoteJid.endsWith('@g.us') ? 'a group' : 'a private chat';
                         const cachedType = getMessageType(cached.message);
                         const cachedText = getMessageText(cached.message, cachedType);
-                        const header = `🗑️ *Antidelete*\n👤 Supprimé par : @${jidBase(deleterJid)}\n💬 Origine : ${chatLabel}\n\n`;
+                        const header = `🗑️ *Antidelete*\n👤 Deleted by: @${jidBase(deleterJid)}\n💬 Origin: ${chatLabel}\n\n`;
                         const mediaField = { IMAGE: 'imageMessage', VIDEO: 'videoMessage', AUDIO: 'audioMessage', STICKER: 'stickerMessage', DOCUMENT: 'documentMessage' }[cachedType];
                         if (mediaField && cached.message.message?.[mediaField]) {
                             const buffer = await downloadMediaMessage(cached.message, 'buffer', {}).catch(() => null);
@@ -1113,12 +1129,12 @@ ${channelStatus}
                                 else if (cachedType === 'VIDEO') await conn.sendMessage(ownerJid, { video: buffer, caption: header + (cachedText !== '[Video]' ? cachedText : ''), ...opts });
                                 else if (cachedType === 'AUDIO') { await conn.sendMessage(ownerJid, { text: header, ...opts }); await conn.sendMessage(ownerJid, { audio: buffer, mimetype: 'audio/mp4', ptt: true }); }
                                 else if (cachedType === 'STICKER') { await conn.sendMessage(ownerJid, { text: header, ...opts }); await conn.sendMessage(ownerJid, { sticker: buffer }); }
-                                else if (cachedType === 'DOCUMENT') await conn.sendMessage(ownerJid, { document: buffer, fileName: cached.message.message?.documentMessage?.fileName || 'fichier', caption: header, ...opts });
+                                else if (cachedType === 'DOCUMENT') await conn.sendMessage(ownerJid, { document: buffer, fileName: cached.message.message?.documentMessage?.fileName || 'file', caption: header, ...opts });
                             } else {
-                                await conn.sendMessage(ownerJid, { text: header + '⚠️ (média expiré, non récupérable)', mentions: [deleterJid] });
+                                await conn.sendMessage(ownerJid, { text: header + '⚠️ (media expired, could not be retrieved)', mentions: [deleterJid] });
                             }
                         } else {
-                            await conn.sendMessage(ownerJid, { text: header + (cachedText || '[message vide]'), mentions: [deleterJid] });
+                            await conn.sendMessage(ownerJid, { text: header + (cachedText || '[empty message]'), mentions: [deleterJid] });
                         }
                     }
                 }
@@ -1142,7 +1158,7 @@ ${channelStatus}
             // FIXED: Handle all message types (private, group, newsletter)
             const from = message.key.remoteJid;
 
-            // --- Fonctions "auto" (lecture, frappe, enregistrement, réaction, statut) ---
+            // --- "Auto" features (read receipts, typing, recording, reactions, status) ---
             if (message.message && from !== 'status@broadcast') {
                 if (store.getToggle('autoread')) {
                     conn.readMessages([message.key]).catch(() => {});
@@ -1163,7 +1179,7 @@ ${channelStatus}
                 conn.readMessages([message.key]).catch(() => {});
             }
 
-            // --- ANTIVIEWONCE : capture auto des médias vue-unique, renvoyés au propriétaire ---
+            // --- ANTIVIEWONCE: auto-capture "view once" media and forward it to the owner ---
             if (store.getToggle('antiviewonce') && from !== 'status@broadcast' && !message.key.fromMe) {
                 try {
                     const found = unwrapViewOnceForCapture(message.message);
@@ -1172,7 +1188,7 @@ ${channelStatus}
                         const targetJid = ownerJid ? `${ownerJid}@s.whatsapp.net` : conn.user.id;
                         const buffer = await downloadMediaMessage({ message: found.message, key: message.key }, 'buffer', {});
                         const senderInfo = getSenderJid(message, conn);
-                        const caption = `🔓 *Antiviewonce* : média capturé automatiquement\n👤 Envoyé par : @${senderInfo.split('@')[0]}\n💬 Chat : ${from}`;
+                        const caption = `🔓 *Antiviewonce*: media captured automatically\n👤 Sent by: @${senderInfo.split('@')[0]}\n💬 Chat: ${from}`;
                         if (found.type === 'imageMessage') await conn.sendMessage(targetJid, { image: buffer, caption, mentions: [senderInfo] });
                         else if (found.type === 'videoMessage') await conn.sendMessage(targetJid, { video: buffer, caption, mentions: [senderInfo] });
                         else if (found.type === 'audioMessage') await conn.sendMessage(targetJid, { audio: buffer, mimetype: 'audio/mp4' });
@@ -1180,6 +1196,26 @@ ${channelStatus}
                 } catch (e) {}
             }
             
+            // --- ANTIBOT: delete other bots' menus when they are not group admins ---
+            if (from.endsWith('@g.us') && !message.key.fromMe && store.getGroupToggle(from, 'antibot')) {
+                try {
+                    const senderJidX = message.key.participant || message.key.remoteJid;
+                    const senderBaseX = jidBase(senderJidX);
+                    if (senderBaseX !== jidBase(conn.user.id)) {
+                        const msgTypeX = getMessageType(message);
+                        const textX = getMessageText(message, msgTypeX);
+                        if (looksLikeBotMenu(textX)) {
+                            const metaX = await conn.groupMetadata(from).catch(() => null);
+                            const participantX = metaX?.participants?.find(p => jidBase(p.id) === senderBaseX);
+                            const senderIsAdminX = participantX?.admin === 'admin' || participantX?.admin === 'superadmin';
+                            if (!senderIsAdminX) {
+                                await conn.sendMessage(from, { delete: message.key }).catch(() => {});
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+
             // Check if it's a newsletter message
             if (from.endsWith('@newsletter')) {
                 await handleMessage(conn, message, sessionId);
